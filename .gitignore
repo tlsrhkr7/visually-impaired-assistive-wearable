@@ -12,3 +12,9 @@ videos/
 *.pcd
 occupancy_grids/
 images/
+ORB_SLAM3/
+output/
+maps/
+clouds/
+database_outputs/
+camera_calibration/env/

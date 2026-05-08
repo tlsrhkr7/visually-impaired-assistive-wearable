@@ -6,18 +6,7 @@
 File.version: "1.0"
 
 Camera.type: "PinHole"
-loopClosing: 0
-
-# Left Camera calibration and distortion parameters (OpenCV)
-# Camera1.fx: 913.848388671875
-# Camera1.fy: 913.6023559570312
-# Camera1.cx: 642.9407348632812
-# Camera1.cy: 371.1956787109375
-
-# Camera1.fx: 614.67170934
-# Camera1.fy: 617.63448453
-# Camera1.cx: 326.22132726
-# Camera1.cy: 245.58281905
+loopClosing: 1
 
 Camera1.fx: 611.7061
 Camera1.fy: 611.9076
@@ -39,6 +28,13 @@ Camera.fps: 30
 # Color order of the images (0: BGR, 1: RGB. It is ignored if images are grayscale)
 Camera.RGB: 1
 
+# Depth camera baseline * fx (used for depth threshold)
+Stereo.ThDepth: 40.0
+Stereo.b: 0.0745
+
+# Depth map values factor (D435i depth is in mm)
+RGBD.DepthMapFactor: 1000.0
+
 # Transformation from body-frame (imu) to left camera
 IMU.T_b_c1: !!opencv-matrix
    rows: 4
@@ -52,29 +48,19 @@ IMU.T_b_c1: !!opencv-matrix
 # Do not insert KFs when recently lost
 IMU.InsertKFsWhenLost: 0
 
-# IMU noise (Use those from VINS-mono)
-IMU.NoiseGyro: 2.44e-4 #1e-3 # rad/s^0.5
-IMU.NoiseAcc: 1.47e-3 #1e-2 # m/s^1.5
-IMU.GyroWalk: 1e-4 # rad/s^1.5
-IMU.AccWalk: 1e-3 # m/s^2.5
+# IMU noise
+IMU.NoiseGyro: 2.44e-4
+IMU.NoiseAcc: 1.47e-3
+IMU.GyroWalk: 1e-4
+IMU.AccWalk: 1e-3
 IMU.Frequency: 200.0
 
 #--------------------------------------------------------------------------------------------
 # ORB Parameters
 #--------------------------------------------------------------------------------------------
-# ORB Extractor: Number of features per image
 ORBextractor.nFeatures: 1250
-
-# ORB Extractor: Scale factor between levels in the scale pyramid
 ORBextractor.scaleFactor: 1.2
-
-# ORB Extractor: Number of levels in the scale pyramid
-ORBextractor.nLevels: 8 # 10
-
-# ORB Extractor: Fast threshold
-# Image is divided in a grid. At each cell FAST are extracted imposing a minimum response.
-# Firstly we impose iniThFAST. If no corners are detected we impose a lower value minThFAST
-# You can lower these values if your images have low contrast
+ORBextractor.nLevels: 8
 ORBextractor.iniThFAST: 20
 ORBextractor.minThFAST: 7
 
@@ -95,6 +81,5 @@ Viewer.ViewpointF: 500.0
 #--------------------------------------------------------------------------------------------
 # Atlas Parameters
 #--------------------------------------------------------------------------------------------
-#
-# System.SaveAtlasToFile: "ORB_SLAM3_ROS2/maps/prev_atlas"
-# System.LoadAtlasFromFile: "ORB_SLAM3_ROS2/maps/prev_atlas"
+System.LoadAtlasFromFile: "/home/a/ros2_ws/src/ORB_SLAM3_ROS2/maps/d435i_map"
+System.SaveAtlasToFile: "/home/a/ros2_ws/src/ORB_SLAM3_ROS2/maps/d435i_map"

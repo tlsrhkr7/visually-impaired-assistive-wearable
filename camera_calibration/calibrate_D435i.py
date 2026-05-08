@@ -30,7 +30,7 @@ class CameraCalib:
         try:
             while True:
                 # Wait for a coherent pair of frames: depth and color
-                frames = pipeline.wait_for_frames()
+                frames = self.pipeline.wait_for_frames()
                 color_frame = frames.get_color_frame()
                 if not color_frame:
                     continue
@@ -47,12 +47,12 @@ class CameraCalib:
 
                 # If found, add object points, image points (after refining them)
                 if ret == True:
-                    objpoints.append(objp)
+                    self.objpoints.append(self.objp)
 
                     corners2 = cv2.cornerSubPix(
-                        gray_image, corners, (11, 11), (-1, -1), criteria
+                        gray_image, corners, (11, 11), (-1, -1), self.criteria
                     )
-                    imgpoints.append(corners2)
+                    self.imgpoints.append(corners2)
 
                     # Draw and display the corners
                     cv2.drawChessboardCorners(gray_image, (10, 7), corners2, ret)
@@ -60,7 +60,7 @@ class CameraCalib:
                     cv2.waitKey(1)
 
                     ret, mtx, dist, rvecs, tvecs = cv2.calibrateCamera(
-                        objpoints, imgpoints, gray_image.shape[::-1], None, None
+                        self.objpoints, self.imgpoints, gray_image.shape[::-1], None, None
                     )
 
                     print(f"matrix:\n {mtx}")
@@ -68,12 +68,16 @@ class CameraCalib:
 
         finally:
             # Stop streaming
-            pipeline.stop()
+            self.pipeline.stop()
 
             # Close the OpenCV window
             cv2.destroyAllWindows()
 
+
 def main():
-    if __name__ == "__main__":
-        cam = CameraCalib()
-        cam.calibrate()
+    cam = CameraCalib()
+    cam.calibrate()
+
+
+if __name__ == "__main__":
+    main()

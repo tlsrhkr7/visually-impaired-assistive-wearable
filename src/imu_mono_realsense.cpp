@@ -21,6 +21,9 @@
 #include <rclcpp/callback_group.hpp>
 #include <rclcpp/logging.hpp>
 #include <rmw/qos_profiles.h>
+#include <message_filters/subscriber.h>
+#include <message_filters/sync_policies/approximate_time.h>
+#include <message_filters/synchronizer.h>
 #include <sensor_msgs/msg/image.hpp>
 #include <sensor_msgs/msg/imu.hpp>
 #include <sensor_msgs/msg/point_cloud2.hpp>
@@ -40,6 +43,16 @@
 // this is orb_slam3
 #include "System.h"
 
+// Override Sophus abort() with a catchable exception.
+// Activated by SOPHUS_ENABLE_ENSURE_HANDLER in CMakeLists.
+namespace Sophus {
+void ensureFailed(char const* function, char const* /*file*/, int /*line*/,
+                  char const* description) {
+  throw std::runtime_error(std::string("Sophus ensure failed in ") +
+                           function + ": " + description);
+}
+}  // namespace Sophus
+
 #include <rclcpp/rclcpp.hpp>
 
 using namespace std::chrono_literals;
@@ -57,10 +70,12 @@ public:
     // declare parameters
     declare_parameter("sensor_type", "imu-monocular");
     declare_parameter("use_pangolin", true);
+    declare_parameter("localization_mode", false);
 
     // get parameters
     sensor_type_param = get_parameter("sensor_type").as_string();
     use_pangolin = get_parameter("use_pangolin").as_bool();
+    bool localization_mode = get_parameter("localization_mode").as_bool();
 
     // define callback groups
     image_callback_group_ =
@@ -87,6 +102,15 @@ public:
       sensor_type = ORB_SLAM3::System::IMU_MONOCULAR;
       settings_file_path = std::string(PROJECT_PATH) +
                            "/config/Monocular-Inertial/RealSense_D435i.yaml";
+    } else if (sensor_type_param == "rgbd-inertial") {
+      sensor_type = ORB_SLAM3::System::IMU_RGBD;
+      if (localization_mode) {
+        settings_file_path = std::string(PROJECT_PATH) +
+                             "/config/RGBD-Inertial/RealSense_D435i_localization.yaml";
+      } else {
+        settings_file_path = std::string(PROJECT_PATH) +
+                             "/config/RGBD-Inertial/RealSense_D435i.yaml";
+      }
     } else {
       RCLCPP_ERROR(get_logger(), "Sensor type not recognized");
       rclcpp::shutdown();
@@ -98,6 +122,11 @@ public:
     // setup orb slam object
     orb_slam3_system_ = std::make_shared<ORB_SLAM3::System>(
       vocabulary_file_path, settings_file_path, sensor_type, use_pangolin, 0);
+
+    if (localization_mode) {
+      orb_slam3_system_->ActivateLocalizationMode();
+      RCLCPP_INFO(get_logger(), "Localization mode activated - map loaded, not adding new keyframes");
+    }
 
     // create publishers
     live_point_cloud_publisher_ =
@@ -116,13 +145,26 @@ public:
     rclcpp::QoS image_qos(rclcpp::KeepLast(10));
     image_qos.reliability(RMW_QOS_POLICY_RELIABILITY_RELIABLE);
     image_qos.durability(RMW_QOS_POLICY_DURABILITY_TRANSIENT_LOCAL);
-    image_sub = create_subscription<sensor_msgs::msg::Image>(
-      "camera/camera/color/image_raw", image_qos,
-      std::bind(&ImuMonoRealSense::image_callback, this, _1), image_options);
 
     rclcpp::QoS imu_qos(rclcpp::KeepLast(10));
     imu_qos.reliability(RMW_QOS_POLICY_RELIABILITY_BEST_EFFORT);
     imu_qos.durability(RMW_QOS_POLICY_DURABILITY_VOLATILE);
+
+    if (sensor_type_param == "rgbd-inertial") {
+      rgb_filter_sub_.subscribe(this, "camera/camera/color/image_raw",
+                                image_qos.get_rmw_qos_profile());
+      depth_filter_sub_.subscribe(this, "camera/camera/depth/image_rect_raw",
+                                  image_qos.get_rmw_qos_profile());
+      rgbd_sync_ = std::make_shared<RGBDSync>(
+        RGBDPolicy(10), rgb_filter_sub_, depth_filter_sub_);
+      rgbd_sync_->registerCallback(
+        std::bind(&ImuMonoRealSense::rgbd_callback, this, _1, _2));
+    } else {
+      image_sub = create_subscription<sensor_msgs::msg::Image>(
+        "camera/camera/color/image_raw", image_qos,
+        std::bind(&ImuMonoRealSense::image_callback, this, _1), image_options);
+    }
+
     imu_sub = create_subscription<sensor_msgs::msg::Imu>(
       "camera/camera/imu", imu_qos,
       std::bind(&ImuMonoRealSense::imu_callback, this, _1), imu_options);
@@ -194,8 +236,8 @@ private:
       new pcl::PointCloud<pcl::PointXYZ>);
     pcl::StatisticalOutlierRemoval<pcl::PointXYZ> sor;
     sor.setInputCloud(cloud);
-    sor.setMeanK(100);
-    sor.setStddevMulThresh(0.1);
+    sor.setMeanK(30);
+    sor.setStddevMulThresh(1.0);
     sor.filter(*sor_cloud);
 
     // radius outlier removal
@@ -203,10 +245,8 @@ private:
       new pcl::PointCloud<pcl::PointXYZ>);
     pcl::RadiusOutlierRemoval<pcl::PointXYZ> radius_outlier;
     radius_outlier.setInputCloud(sor_cloud);
-    radius_outlier.setRadiusSearch(
-      0.1); // Adjust based on spacing in the point cloud
-    radius_outlier.setMinNeighborsInRadius(
-      5); // Increase for more aggressive outlier removal
+    radius_outlier.setRadiusSearch(0.3);
+    radius_outlier.setMinNeighborsInRadius(2);
     radius_outlier.filter(*radius_cloud);
 
     return radius_cloud;
@@ -372,13 +412,79 @@ private:
             Tcw_.setQuaternion(Tcw.unit_quaternion());
           }
         }
-        cv::Mat pretty_frame = orb_slam3_system_->getPrettyFrame();
-        video_writer_.write(pretty_frame);
 
       } catch (const std::exception &e) {
         RCLCPP_ERROR(get_logger(), "SLAM processing exception: %s", e.what());
       }
+
+      cv::Mat pretty_frame = orb_slam3_system_->getPrettyFrame();
+      video_writer_.write(pretty_frame);
     }
+  }
+
+  void rgbd_callback(const sensor_msgs::msg::Image::ConstSharedPtr rgb_msg,
+                     const sensor_msgs::msg::Image::ConstSharedPtr depth_msg)
+  {
+    cv_bridge::CvImageConstPtr rgb_ptr, depth_ptr;
+    try {
+      rgb_ptr = cv_bridge::toCvShare(rgb_msg, sensor_msgs::image_encodings::MONO8);
+      depth_ptr = cv_bridge::toCvShare(depth_msg, sensor_msgs::image_encodings::TYPE_16UC1);
+    } catch (cv_bridge::Exception &e) {
+      RCLCPP_ERROR(get_logger(), "cv_bridge exception: %s", e.what());
+      return;
+    }
+
+    double tImage = rgb_msg->header.stamp.sec + rgb_msg->header.stamp.nanosec * 1e-9;
+
+    vector<ORB_SLAM3::IMU::Point> vImuMeas;
+    buf_mutex_imu_.lock();
+    while (!imu_buf_.empty()) {
+      auto imuPtr = imu_buf_.front();
+      imu_buf_.pop();
+      double tIMU = imuPtr->header.stamp.sec + imuPtr->header.stamp.nanosec * 1e-9;
+      cv::Point3f acc(imuPtr->linear_acceleration.x,
+                      imuPtr->linear_acceleration.y,
+                      imuPtr->linear_acceleration.z);
+      cv::Point3f gyr(imuPtr->angular_velocity.x, imuPtr->angular_velocity.y,
+                      imuPtr->angular_velocity.z);
+      vImuMeas.push_back(ORB_SLAM3::IMU::Point(acc, gyr, tIMU));
+    }
+    buf_mutex_imu_.unlock();
+
+    if (vImuMeas.empty()) {
+      return;
+    }
+
+    try {
+      if (vImuMeas.size() > 1) {
+        auto Tcw = orb_slam3_system_->TrackRGBD(
+          rgb_ptr->image, depth_ptr->image, tImage, vImuMeas);
+
+        int state = orb_slam3_system_->GetTrackingState();
+        if (state == 2) {  // OK
+          tracking_lost_count_ = 0;
+          if (!std::isnan(Tcw.translation().x()) &&
+              !std::isnan(Tcw.unit_quaternion().coeffs().sum())) {
+            Tcw_.translation() = Tcw.translation();
+            Tcw_.setQuaternion(Tcw.unit_quaternion());
+          }
+        } else {
+          tracking_lost_count_++;
+          if (tracking_lost_count_ > 60) {
+            RCLCPP_WARN(get_logger(),
+                        "Tracking lost for %d frames, resetting system",
+                        tracking_lost_count_);
+            orb_slam3_system_->Reset();
+            tracking_lost_count_ = 0;
+          }
+        }
+      }
+    } catch (const std::exception &e) {
+      RCLCPP_ERROR(get_logger(), "SLAM processing exception: %s", e.what());
+    }
+
+    cv::Mat pretty_frame = orb_slam3_system_->getPrettyFrame();
+    video_writer_.write(pretty_frame);
   }
 
   void imu_callback(const sensor_msgs::msg::Imu &msg)
@@ -531,8 +637,15 @@ private:
     }
   }
 
+  using RGBDPolicy = message_filters::sync_policies::ApproximateTime<
+    sensor_msgs::msg::Image, sensor_msgs::msg::Image>;
+  using RGBDSync = message_filters::Synchronizer<RGBDPolicy>;
+
   rclcpp::Subscription<sensor_msgs::msg::Image>::SharedPtr image_sub;
   rclcpp::Subscription<sensor_msgs::msg::Imu>::SharedPtr imu_sub;
+  message_filters::Subscriber<sensor_msgs::msg::Image> rgb_filter_sub_;
+  message_filters::Subscriber<sensor_msgs::msg::Image> depth_filter_sub_;
+  std::shared_ptr<RGBDSync> rgbd_sync_;
   rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr
     live_point_cloud_publisher_;
   rclcpp::Publisher<geometry_msgs::msg::PoseArray>::SharedPtr
@@ -577,6 +690,7 @@ private:
 
   bool inertial_ba1_;
   bool inertial_ba2_;
+  int tracking_lost_count_ = 0;
   Sophus::SE3f Tcw_;
 
   cv::VideoWriter video_writer_;

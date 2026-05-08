@@ -42,13 +42,18 @@ def generate_launch_description():
             ),
             DeclareLaunchArgument(
                 "sensor_type",
-                default_value="imu-monocular",
+                default_value="rgbd-inertial",
                 description="The mode which ORB_SLAM3 will run in.",
             ),
             DeclareLaunchArgument(
                 "use_pangolin",
                 default_value="true",
                 description="Whether to use Pangolin for visualization.",
+            ),
+            DeclareLaunchArgument(
+                "localization_mode",
+                default_value="false",
+                description="If true, load saved map and do localization only (no new mapping).",
             ),
             DeclareLaunchArgument(
                 "playback_bag",
@@ -87,7 +92,8 @@ def generate_launch_description():
                     "enable_accel": "true",
                     "enable_gyro": "true",
                     "unite_imu_method": "2",
-                    "enable_depth": "false",
+                    "enable_depth": "true",
+                    "depth_module.depth_profile": "640x480x30",
                 }.items(),
                 condition=IfCondition(
                     PythonExpression(
@@ -108,6 +114,7 @@ def generate_launch_description():
                     {
                         "sensor_type": LaunchConfiguration("sensor_type"),
                         "use_pangolin": LaunchConfiguration("use_pangolin"),
+                        "localization_mode": LaunchConfiguration("localization_mode"),
                     }
                 ],
             ),
@@ -203,6 +210,7 @@ def generate_launch_description():
                     ),
                     "/camera/camera/imu",
                     "/camera/camera/color/image_raw",
+                    "/camera/camera/depth/image_rect_raw",
                 ],
                 shell=True,
                 condition=IfCondition(

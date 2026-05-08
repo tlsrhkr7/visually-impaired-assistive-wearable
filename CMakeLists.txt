@@ -37,6 +37,7 @@ find_package(tf2 REQUIRED)
 find_package(tf2_ros REQUIRED)
 find_package(nav_msgs REQUIRED)
 find_package(cv_bridge REQUIRED)
+find_package(message_filters REQUIRED)
 find_package(realsense2_description REQUIRED)
 find_package(xacro REQUIRED)
 find_package(Sophus REQUIRED)
@@ -69,6 +70,7 @@ set(THIS_PACKAGE_INCLUDE_DEPENDS
   tf2_ros
   nav_msgs
   cv_bridge
+  message_filters
   realsense2_description
   xacro
   pcl_ros
@@ -125,6 +127,8 @@ include_directories(
 target_include_directories(imu_mono_node_cpp PUBLIC
     ${ORB_SLAM3_INCLUDE_DIR} ${OpenCV_INCLUDE_DIRS}
 )
+
+target_compile_definitions(imu_mono_node_cpp PRIVATE SOPHUS_ENABLE_ENSURE_HANDLER)
 
 target_link_libraries(imu_mono_node_cpp PUBLIC ${ORB_SLAM3_LIBRARY} ${PCL_LIBRARIES}
     ${libpointmatcher_LIBRARIES} ${libpointmatcher_ros_LIBRARIES} ${OpenCV_LIBS})
@@ -184,6 +188,11 @@ install(
 install(
   DIRECTORY launch/
   DESTINATION share/${PROJECT_NAME}/launch
+)
+
+install(
+  DIRECTORY maps/
+  DESTINATION share/${PROJECT_NAME}/maps
 )
 
 if(BUILD_TESTING)
