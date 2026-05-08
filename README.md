@@ -16,7 +16,7 @@ ROS2 Humble + ORB-SLAM3 IMU_RGBD, Jetson Orin + Intel RealSense D435I
 
 ---
 
-## 현재 상태 (2026-05-08)
+## 현재 상태 (2026-05-09)
 
 ### 완료된 것
 - IMU_RGBD 모드 구현 완료 (ORB-SLAM3 sensor type 5)
@@ -28,6 +28,7 @@ ROS2 Humble + ORB-SLAM3 IMU_RGBD, Jetson Orin + Intel RealSense D435I
 - 트래킹 워치독: 60프레임 연속 실패 시 자동 리셋
 - IIO udev 규칙으로 재연결 시 IMU 권한 자동 수정
 - IMU BA2 초기화 완료 후 RViz에 포인트클라우드 표시
+- HID sensor 커널 모듈 빌드 및 systemd 서비스 등록 (재부팅 시 자동 로드)
 
 ### 미완료 / 알려진 문제
 - 루프 클로징 비활성화 상태 (`loopClosing: 0`)
@@ -39,10 +40,11 @@ ROS2 Humble + ORB-SLAM3 IMU_RGBD, Jetson Orin + Intel RealSense D435I
 
 ## 켤 때마다 해야 하는 세팅
 
-IMU가 안 잡힐 때 아래 명령어 순서대로 실행:
+재부팅 후 HID sensor 모듈은 systemd가 자동으로 로드합니다.
+**IIO 권한만 수동으로 적용**하면 됩니다:
 
 ```bash
-# 1. IIO 권한 수동 적용 (IMU 접근 허용)
+# 1. IIO 권한 적용 (IMU 접근 허용)
 sudo /usr/local/bin/fix-iio-perms.sh /sys/bus/iio/devices/iio:device0
 sudo /usr/local/bin/fix-iio-perms.sh /sys/bus/iio/devices/iio:device1
 
