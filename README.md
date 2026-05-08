@@ -1,124 +1,180 @@
-# ORB_SLAM3_ROS2
-Implementing ORB_SLAM3 in ROS 2 humble with some bonus features.
+# 시각장애인 보조 웨어러블 — SLAM 모듈
 
-This repository is meant for running ORB_SLAM3 in ROS 2 humble with a D435i Realsense
-camera. If you're looking to run ORB_SLAM3 on a dataset using ROS 2, I suggest
-you look at other repositories.
+ROS2 Humble + ORB-SLAM3 IMU_RGBD, Jetson Orin + Intel RealSense D435I
 
-This project is only set up for monocular and imu-monocular modes in orb_slam3
-at the moment. I will add support for stereo and RGB-D modes in the next few
-weeks (from today, 2024-12-03).
+**목표:** 한 공간을 매핑해서 맵을 저장하고, 나중에 켜도 그 맵으로 위치 추정(localization)만 하는 시스템
 
-### Building the project
+---
 
-#### Setting up your workspace
-The first thing I will do is explain how I set up my ROS 2 workspace for this project.
+## 하드웨어
 
-Make a directory for your ROS 2 workspace, then cd into it:
-```sh
-mkdir -p ws/src/ && cd ws/src/
-```
-inside the ```src``` directory, clone this repository and its submodules:
-```sh
-git clone --recurse-submodules -b main https://github.com/gjcliff/ORB_SLAM3_ROS2.git
-```
-#### Building ORB_SLAM3
-Next, we have to build orbslam3 and its dependencies.
+- **플랫폼:** Jetson Orin (aarch64, L4T R36.5.0, Linux 5.15.185-tegra)
+- **카메라:** Intel RealSense D435I (USB 3.0 포트 필수)
+  - RGB 640x480 @ 30fps
+  - Depth 640x480 @ 30fps
+  - IMU 200Hz (가속도계 + 자이로, HID/IIO 서브시스템)
 
-You need to install ORB_SLAM3's dependencies first. Go to [their repo](https://github.com/UZ-SLAMLab/ORB_SLAM3) and follow
-their instructions
+---
 
-If you are compiling Pangolin on an Nvidia Jetson, you may need to go into
-Pangolin's CMakelists.txt file and remove the -Werror option from ```add_compile_options()```
+## 현재 상태 (2026-05-08)
 
-You can install eigen3 on Ubuntu 22.04 with
+### 완료된 것
+- IMU_RGBD 모드 구현 완료 (ORB-SLAM3 sensor type 5)
+- RGB + Depth `ApproximateTimeSynchronizer`로 동기화
+- IMU 하드웨어 보정 완료 (값 EEPROM에 저장, config에 반영)
+- Atlas 저장/불러오기 구현 (`maps/d435i_map`)
+- `localization_mode` launch 인자 — 저장된 맵 불러와서 위치 추정만 수행
+- Sophus NaN 크래시 수정 (abort → 잡히는 예외로 변환)
+- 트래킹 워치독: 60프레임 연속 실패 시 자동 리셋
+- IIO udev 규칙으로 재연결 시 IMU 권한 자동 수정
+- IMU BA2 초기화 완료 후 RViz에 포인트클라우드 표시
+
+### 미완료 / 알려진 문제
+- 루프 클로징 비활성화 상태 (`loopClosing: 0`)
+  - **원인:** 루프 클로징 후 타임스탬프 점프 → `CreateMapInAtlas()` → IMU 버퍼 비어있음 → `mpImuPreintegratedFrame`이 null → `PredictStateIMU()` 에서 null 역참조 → SIGSEGV
+  - **수정 방법:** `ORB_SLAM3/src/Tracking.cc`의 `PredictStateIMU()` 함수 1754번째, 1780번째 줄 앞에 null 체크 추가 후 ORB-SLAM3 라이브러리 재빌드
+  - **영향:** 큰 공간이나 루프 경로에서 드리프트(누적 오차) 발생
+
+---
+
+## 켤 때마다 해야 하는 세팅
+
+IMU가 안 잡힐 때 아래 명령어 순서대로 실행:
+
 ```bash
-sudo apt install libeigen3-dev
+# 1. IIO 권한 수동 적용 (IMU 접근 허용)
+sudo /usr/local/bin/fix-iio-perms.sh /sys/bus/iio/devices/iio:device0
+sudo /usr/local/bin/fix-iio-perms.sh /sys/bus/iio/devices/iio:device1
+
+# 2. ROS2 워크스페이스 소싱
+source /opt/ros/humble/setup.bash
+source /home/a/ros2_ws/install/setup.bash
+
+# 3. 토픽 정상 수신 확인 (launch 후)
+ros2 topic hz /camera/camera/color/image_raw
+ros2 topic hz /camera/camera/depth/image_rect_raw
+ros2 topic hz /camera/camera/imu
 ```
-and then create a symlink so that ORB_SLAM3 can find it:
+
+**로그에 `No HID info provided, IMU is disabled` 뜨면:**
+- USB 3.0 포트(파란색)에 꽂혀 있는지 확인
+- IIO 권한 수동 적용 후 launch 재시작
+
+**udev가 안 먹힐 때:**
 ```bash
-sudo ln -s /usr/include/eigen3/Eigen/ /usr/include/Eigen/
+sudo udevadm control --reload-rules
+sudo udevadm trigger --subsystem-match=iio
 ```
 
-Next, cd into the ORB_SLAM3 directory and run the ```build.sh``` script. Make sure the
-script has execute permissions.
-```sh
-cd ORB_SLAM3_ROS2/ORB_SLAM3/
-./build.sh
-```
-TODO: Make a dockerfile for the project so that dependencies are set up by default.
+---
 
-#### Building the ROS 2 project
-Now you can source ros humble, and the build the project. cd into your ROS 2
-workspace and type
-```sh
-cd -
-colcon build
+## 실행 방법
+
+### 매핑 (새 맵 만들기)
+
+```bash
+ros2 launch orb_slam3_ros2 mapping.launch.py
+```
+
+- 실행 후 카메라를 **15초 이상 천천히 움직여야** IMU 초기화 완료
+- 로그에 `Inertial BA1 complete` → `Inertial BA2 complete` 뜨면 포인트클라우드 나옴
+- **Ctrl+C로 종료** → 맵이 `maps/d435i_map`에 자동 저장
+
+### 로컬라이제이션 (저장된 맵으로 위치 추정)
+
+```bash
+ros2 launch orb_slam3_ros2 mapping.launch.py localization_mode:=true
+```
+
+### 로스백 녹화 (나중에 오프라인 매핑용)
+
+```bash
+ros2 launch orb_slam3_ros2 mapping.launch.py record_bag:=true
+```
+
+`bags/ORB_SLAM3_YYYY-MM-DD_HH-MM-SS/`에 저장됨. 녹화 토픽:
+- `/camera/camera/imu`
+- `/camera/camera/color/image_raw`
+- `/camera/camera/depth/image_rect_raw`
+
+### 로스백 재생
+
+```bash
+ros2 launch orb_slam3_ros2 mapping.launch.py playback_bag:=<백폴더이름>
+```
+
+---
+
+## IMU 초기화 조건
+
+| 단계 | 조건 | 결과 |
+|------|------|------|
+| BA1 | 5초 이상 움직임 | 거친 IMU 초기화 |
+| BA2 | 15초 이상 움직임 | 완전 초기화, 포인트클라우드 표시 |
+| 리셋 | 처음 10초 내 2cm 이하 이동 | 리셋 후 재시도 |
+
+**실행 직후 카메라를 최소 15초 이상 움직여야 합니다.**
+
+---
+
+## 맵 저장 위치
+
+```
+maps/d435i_map
+```
+
+`config/RGBD-Inertial/RealSense_D435i.yaml`의 `System.SaveAtlasToFile` 경로.
+
+**Ctrl+C 정상 종료 시에만 저장됨.** SIGKILL이나 크래시로 죽으면 저장 안 됨.
+
+---
+
+## 설정 파일
+
+| 파일 | 용도 |
+|------|------|
+| `config/RGBD-Inertial/RealSense_D435i.yaml` | 매핑용 메인 설정 |
+| `config/RGBD-Inertial/RealSense_D435i_localization.yaml` | 로컬라이제이션용 설정 (저장된 맵 불러옴) |
+
+주요 파라미터:
+```yaml
+loopClosing: 0              # 비활성화 상태 — Tracking.cc null ptr 버그 수정 후 1로 변경
+IMU.Frequency: 200.0
+RGBD.DepthMapFactor: 1000.0  # D435I depth 단위는 mm
+System.SaveAtlasToFile: "/home/a/ros2_ws/src/ORB_SLAM3_ROS2/maps/d435i_map"
+```
+
+---
+
+## IIO udev 규칙 (IMU 권한 자동 수정)
+
+파일: `/etc/udev/rules.d/99-hid-sensor-iio.rules`
+```
+SUBSYSTEM=="iio", ACTION=="add", ATTR{name}=="accel_3d", RUN+="/usr/local/bin/fix-iio-perms.sh /sys%p"
+SUBSYSTEM=="iio", ACTION=="add", ATTR{name}=="gyro_3d",  RUN+="/usr/local/bin/fix-iio-perms.sh /sys%p"
+```
+
+D435I 꽂을 때 자동으로 실행됨. 안 되면:
+```bash
+sudo udevadm control --reload-rules
+sudo udevadm trigger --subsystem-match=iio
+```
+
+---
+
+## 빌드
+
+```bash
+cd /home/a/ros2_ws
+colcon build --packages-select orb_slam3_ros2
 source install/setup.bash
 ```
-### Running the project
 
-There are multiple ways to use this project.
-
-#### ORB_SLAM3
-
-The command to run VIO SLAM using a D435i RealSense camera is:
-```sh
-ros2 launch orb_slam3_ros2 mapping.launch.xml
+`ORB_SLAM3` 라이브러리 자체를 수정했을 때 (예: `Tracking.cc`):
+```bash
+cd /home/a/ros2_ws/src/ORB_SLAM3_ROS2/ORB_SLAM3
+make -j$(nproc)
+cd /home/a/ros2_ws
+colcon build --packages-select orb_slam3_ros2
+source install/setup.bash
 ```
-This will launch the ORB_SLAM3 system in imu-monocular mode by default. You should
-see rviz pop up, and then shortly a Pangolin and an opencv window. You should
-also see the 3D point cloud from ORB_SLAM3 and an occupancy grid being built
-in RVIZ. The map you create will automatically be saved as a filtered
-point cloud for the point cloud library (PCL). These files are stored in the
-```maps``` directory.
-
-You can record and play back rosbags with arguments to the launch file:
-```sh
-'record_bag':
-    Whether or not to record a rosbag.
-    (default: 'false')
-
-'bag_name':
-    The name of the bag if record_bag is true. By default, the name of the bag
-    will be ORB_SLAM3_YYYY-MM-DD_HH-mm-ss
-    (default: 'ORB_SLAM3_YYYY-MM-DD_HH-mm-ss')
-
-'playback_bag':
-    The rosbag to play during execution. If set, the realsense2_camera node
-    will not launch. Otherwise, nothing will happen.
-    (default: 'changeme')
-```
-Bags are recorded to the ```bags``` directory. The playbag_back argument shouldn't
-be a full path to the bag, just the name of it.
-
-#### Localizing
-The localization launch file is capable of finding the tf from one occupancy
-grid to another. This is useful for localizing maps created by slam_toolbox or
-rtabmap in maps create by ORB_SLAM3. To find the tf between the occupancy grids
-I use ICP matching through libpointmatcher. The launch file is:
-```sh
-ros2 launch orb_slam3_ros2 localize.launch.xml
-```
-You must provide the following argument in order to run localization:
-```sh
-'reference_map_file':
-    The reference map file to localize against
-    (default: 'changeme.pcd')
-```
-This should just be the map file's name, not the full path. Maybe obviously,
-you can use maps created by running mapping.launch.py as the reference map file.
-
-### Troubleshooting
-1. ORB_SLAM3 keeps resetting the map on its own.
-    * Sometimes the map keeps getting lost over and over again over the course of a singular
-    run. The best option is just to kill the program and try again.
-2. IMU Initialization keeps failing
-    * Try and make sure you're moving at the start of the program so that the IMU
-    has enough data to initialize. Look for VIBA 1 and VIBA 2 in the terminal output
-    (Visual Inertial Bundle Adjustment). However I've noticed that once VIBA 1
-    has been completed, you'll likely be able to keep the map even if you stand
-    relatively still.
-3. Maps look strange or too unlike the real environment
-    * I suggest calibrating your camera and IMU. I've provided files, scripts,
-    and instructions for doing this [here](./camera_calibration/README.md)
