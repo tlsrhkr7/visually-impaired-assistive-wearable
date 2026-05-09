@@ -6,7 +6,7 @@
 File.version: "1.0"
 
 Camera.type: "PinHole"
-loopClosing: 0
+loopClosing: 1
 
 Camera1.fx: 611.7061
 Camera1.fy: 611.9076

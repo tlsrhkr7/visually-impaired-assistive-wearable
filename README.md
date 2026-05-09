@@ -175,8 +175,69 @@ source install/setup.bash
 `ORB_SLAM3` 라이브러리 자체를 수정했을 때 (예: `Tracking.cc`):
 ```bash
 cd /home/a/ros2_ws/src/ORB_SLAM3_ROS2/ORB_SLAM3
-make -j$(nproc)
+make -j2
 cd /home/a/ros2_ws
 colcon build --packages-select orb_slam3_ros2
 source install/setup.bash
 ```
+
+---
+
+## 다른 머신에서 처음 셋업할 때 (성호 노트북 등)
+
+이 repo는 `ORB_SLAM3`를 **너 fork(`tlsrhkr7/ORB_SLAM3`)에서 서브모듈로** 가져옴 (Jetson SIGSEGV 수정 포함).
+경로는 `setup.sh`가 clone 위치에 맞춰 자동 조정.
+
+### 의존성 (Ubuntu 22.04)
+
+```bash
+sudo apt update
+sudo apt install -y \
+  ros-humble-desktop \
+  ros-humble-imu-filter-madgwick \
+  ros-humble-realsense2-camera \
+  ros-humble-realsense2-description \
+  librealsense2-dev librealsense2-utils \
+  libeigen3-dev libopencv-dev libpangolin-dev \
+  libssl-dev libboost-all-dev libglew-dev \
+  python3-colcon-common-extensions \
+  build-essential cmake git
+```
+
+`libpangolin-dev`가 apt에 없으면 소스 빌드: https://github.com/stevenlovegrove/Pangolin
+
+### 클론 → 셋업 → 빌드
+
+```bash
+mkdir -p ~/ros2_ws/src && cd ~/ros2_ws/src
+
+# 1. clone (--recursive로 서브모듈 같이)
+git clone --recursive https://github.com/tlsrhkr7/visually-impaired-assistive-wearable.git
+cd visually-impaired-assistive-wearable
+
+# 2. setup.sh 한 번 실행
+#    - 서브모듈 초기화 (혹시 누락된 경우)
+#    - YAML의 /home/a/... 경로를 현재 클론 위치 기준으로 치환
+#    - maps/ 디렉토리 생성
+#    - ORB_SLAM3 라이브러리 빌드 (10~20분)
+./setup.sh
+
+# 3. ROS2 패키지 빌드
+cd ~/ros2_ws
+colcon build --packages-select orb_slam3_ros2
+source install/setup.bash
+```
+
+### 매핑 → 맵 파일 → 다른 머신 로컬라이제이션
+
+매핑하면 `~/ros2_ws/src/visually-impaired-assistive-wearable/maps/d435i_map.osa`에 저장됨.
+이 파일 하나를 다른 머신의 같은 경로에 복사하면 그 머신에서 로컬라이제이션 가능:
+
+```bash
+ros2 launch orb_slam3_ros2 mapping.launch.py localization_mode:=true
+```
+
+### 호환성 주의
+
+- ORB_SLAM3 라이브러리 빌드 버전이 양쪽에서 같아야 atlas 파일이 호환됨 (이 repo + fork 사용하면 자동 보장)
+- x86_64 ↔ aarch64 atlas 파일 호환은 이론상 OK이지만 보장 못 함 → 작은 맵으로 한 번 테스트 후 본격 매핑 권장
